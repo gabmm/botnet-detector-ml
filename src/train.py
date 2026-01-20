@@ -21,7 +21,6 @@ def train():
         stratify=y # esse parametro garante que a quantidade de BOT / BENIGN vai ficar igual pros dois set (train/test)
     )
 
-    # 3. Criar o modelo
     model = RandomForestClassifier(
         n_estimators=100,
         random_state=10,
@@ -29,10 +28,8 @@ def train():
         n_jobs=-1
     )
 
-    # 4. Treinar
     model.fit(X_train, y_train)
 
-    # 5. Salvar o modelo
     MODEL_DIR.mkdir(exist_ok=True)
     joblib.dump(model, MODEL_PATH)
 

@@ -17,10 +17,8 @@ MODEL_PATH = BASE_DIR / "model" / "botnet_rf.pkl"
 
 
 def evaluate():
-    # 1. Carregar dados preparados
     X, y, _ = prepare_features()
 
-    # 2. Recriar o mesmo split do treino
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -29,13 +27,10 @@ def evaluate():
         stratify=y
     )
 
-    # 3. Carregar modelo treinado
     model = joblib.load(MODEL_PATH)
 
-    # 4. Predições
     y_pred = model.predict(X_test)
 
-    # 5. Relatório de métricas
     print("\n=== Classification Report ===\n")
     print(classification_report(
         y_test,
@@ -43,7 +38,6 @@ def evaluate():
         target_names=["BENIGN", "BOT"]
     ))
 
-    # 6. Matriz de confusão
     cm = confusion_matrix(y_test, y_pred)
     disp = ConfusionMatrixDisplay(
         confusion_matrix=cm,
