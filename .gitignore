@@ -1,0 +1,19 @@
+# Ambiente virtual
+venv/
+
+# Arquivos Python
+__pycache__/
+*.pyc
+
+# Modelos treinados
+model/
+*.pkl
+
+# Relatórios gerados
+reports/
+
+# Dataset local
+data/*.csv
+
+# VS Code
+.vscode/
