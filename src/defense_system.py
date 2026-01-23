@@ -6,6 +6,7 @@ import sys
 from scapy.all import sniff, IP
 from collections import defaultdict
 from pathlib import Path
+import numpy as np
 
 # --- CONFIGURAÇÕES ---
 # Ajuste de caminho para garantir que encontre a pasta model
@@ -48,60 +49,91 @@ def block_ip(ip):
     # -I INPUT 1: Insere a regra na PRIMEIRA posição (prioridade máxima)
     os.system(f"sudo iptables -I INPUT -s {ip} -j DROP")
 
-def process_and_predict(ip_data):
-    current_time = time.time()
-    duration = current_time - ip_data['start_time']
+def process_and_predict(ip_src, stats):
+    duration = (time.time() - stats['start_time']) * 1000000 # microssegundos
+    if duration <= 0: duration = 1
     
+    # Criar DataFrame com 68 colunas zeradas
     input_data = {feature: 0.0 for feature in EXPECTED_FEATURES}
     
-    # Preenchimento básico das métricas para o modelo
-    if 'Flow Duration' in input_data: input_data['Flow Duration'] = duration * 1000000 # microssegundos
-    if 'Total Fwd Packets' in input_data: input_data['Total Fwd Packets'] = ip_data['packet_count']
-    if 'Total Length of Fwd Packets' in input_data: input_data['Total Length of Fwd Packets'] = ip_data['byte_count']
+    # Cálculos estatísticos básicos
+    lens = np.array(stats['lengths'])
+    iats = np.array(stats['iats'])
     
+    # Preenchendo as Features de Fluxo (Flow)
+    input_data['Flow Duration'] = duration
+    input_data['Total Fwd Packets'] = stats['packet_count']
+    input_data['Total Length of Fwd Packets'] = stats['byte_count']
+    input_data['Flow Packets/s'] = (stats['packet_count'] / duration) * 1000000
+    input_data['Flow Bytes/s'] = (stats['byte_count'] / duration) * 1000000
+    
+    # Features de Tamanho de Pacote
+    input_data['Fwd Packet Length Max'] = np.max(lens)
+    input_data['Fwd Packet Length Min'] = np.min(lens)
+    input_data['Fwd Packet Length Mean'] = np.mean(lens)
+    input_data['Fwd Packet Length Std'] = np.std(lens)
+    
+    # Features de Tempo (IAT - Inter Arrival Time)
+    if len(iats) > 0:
+        input_data['Flow IAT Mean'] = np.mean(iats)
+        input_data['Flow IAT Max'] = np.max(iats)
+        input_data['Flow IAT Min'] = np.min(iats)
+        input_data['Flow IAT Std'] = np.std(iats)
+
+    # Organiza as colunas exatamente como o modelo foi treinado
     df_input = pd.DataFrame([input_data])[EXPECTED_FEATURES]
     
-    # Pega a probabilidade (ex: [0.8, 0.2] -> 80% Benigno, 20% Bot)
-    proba = model.predict_proba(df_input)[0]
+    # A IA toma a decisão baseada em todos os 68 parâmetros
+    prob = model.predict_proba(df_input)[0][1]
     prediction = model.predict(df_input)[0]
     
-    print(f"📊 IP: {ip_data['src_ip']} | Pacotes: {ip_data['packet_count']} | Probabilidade BOT: {proba[1]:.2f}")
+    print(f"🧠 [IA] Análise de {ip_src}: Confiança de Bot em {prob*100:.2f}%")
     
     return prediction
+
+network_stats = {}
 
 def packet_callback(packet):
     if packet.haslayer(IP):
         ip_src = packet[IP].src
-        
-        # Ignorar localhost e tráfego local comum da VM
-        if ip_src == "127.0.0.1" or ip_src == "0.0.0.0": 
-            return
-
-        # Atualizar estatísticas do IP
-        stats = traffic_stats[ip_src]
-        stats['packet_count'] += 1
-        stats['byte_count'] += len(packet)
-        stats['src_ip'] = ip_src
-
-        # Verifica janela de tempo
+        pkt_len = len(packet)
         current_time = time.time()
+
+        if ip_src not in network_stats:
+            network_stats[ip_src] = {
+                'start_time': current_time,
+                'last_timestamp': current_time,
+                'packet_count': 0,
+                'byte_count': 0,
+                'lengths': [],
+                'iats': [] # Inter-arrival times
+            }
+
+        stats = network_stats[ip_src]
+        stats['packet_count'] += 1
+        stats['byte_count'] += pkt_len
+        stats['lengths'].append(pkt_len)
+        
+        # Calcula o intervalo entre pacotes (IAT)
+        iat = (current_time - stats['last_timestamp']) * 1000000 # microssegundos
+        stats['iats'].append(iat)
+        stats['last_timestamp'] = current_time
+
+        # Processa a cada janela de tempo
         if current_time - stats['start_time'] >= WINDOW_SIZE:
+            is_bot = process_and_predict(ip_src, stats)
+            if is_bot == 1:
+                block_ip(ip_src)
             
-            # Só faz a predição se tiver um tráfego mínimo (ex: > 10 pacotes)
-            # Isso evita processar pings isolados
-            if stats['packet_count'] > 10:
-                is_bot = process_and_predict(stats)
-                
-                if is_bot == 1:
-                    block_ip(ip_src)
-                    del traffic_stats[ip_src] # Remove da memória
-                    return
-
-            # Reseta a janela para continuar monitorando
-            stats['start_time'] = current_time
-            stats['packet_count'] = 0
-            stats['byte_count'] = 0
-
+            # Reinicia estatísticas
+            network_stats[ip_src] = {
+                'start_time': time.time(),
+                'last_timestamp': time.time(),
+                'packet_count': 0,
+                'byte_count': 0,
+                'lengths': [],
+                'iats': []
+            }
 # --- EXECUÇÃO ---
 if __name__ == "__main__":
     # Verifica se é root (necessário para sniff e iptables)
