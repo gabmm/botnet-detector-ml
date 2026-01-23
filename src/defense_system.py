@@ -49,52 +49,25 @@ def block_ip(ip):
     os.system(f"sudo iptables -I INPUT -s {ip} -j DROP")
 
 def process_and_predict(ip_data):
-    """
-    Prepara os dados para o modelo preenchendo as colunas faltantes com zero.
-    """
     current_time = time.time()
     duration = current_time - ip_data['start_time']
     
-    # 1. Cria um dicionário com ZEROS para todas as colunas que o modelo espera
-    # Isso evita o erro "Feature names mismatch"
     input_data = {feature: 0.0 for feature in EXPECTED_FEATURES}
     
-    # 2. Preenche apenas as métricas que conseguimos calcular em tempo real
-    # Mapeamos os nomes do Scapy para os nomes prováveis do Dataset (CIC-IDS)
+    # Preenchimento básico das métricas para o modelo
+    if 'Flow Duration' in input_data: input_data['Flow Duration'] = duration * 1000000 # microssegundos
+    if 'Total Fwd Packets' in input_data: input_data['Total Fwd Packets'] = ip_data['packet_count']
+    if 'Total Length of Fwd Packets' in input_data: input_data['Total Length of Fwd Packets'] = ip_data['byte_count']
     
-    # Duração do fluxo
-    if 'Flow Duration' in input_data:
-        input_data['Flow Duration'] = duration
+    df_input = pd.DataFrame([input_data])[EXPECTED_FEATURES]
     
-    # Contagem de pacotes (Assumimos como Forward Packets para simplificar)
-    if 'Total Fwd Packets' in input_data:
-        input_data['Total Fwd Packets'] = ip_data['packet_count']
-    if 'Subflow Fwd Pkts' in input_data:
-        input_data['Subflow Fwd Pkts'] = ip_data['packet_count']
-        
-    # Contagem de Bytes
-    if 'Total Length of Fwd Packets' in input_data:
-        input_data['Total Length of Fwd Packets'] = ip_data['byte_count']
-    if 'Subflow Fwd Bytes' in input_data:
-        input_data['Subflow Fwd Bytes'] = ip_data['byte_count']
-
-    # Taxa (Bytes/s ou Pacotes/s)
-    if 'Flow Bytes/s' in input_data and duration > 0:
-        input_data['Flow Bytes/s'] = ip_data['byte_count'] / duration
-    if 'Flow Packets/s' in input_data and duration > 0:
-        input_data['Flow Packets/s'] = ip_data['packet_count'] / duration
-
-    # 3. Cria o DataFrame garantindo a ORDEM EXATA das colunas
-    df_input = pd.DataFrame([input_data])
-    df_input = df_input[EXPECTED_FEATURES]
+    # Pega a probabilidade (ex: [0.8, 0.2] -> 80% Benigno, 20% Bot)
+    proba = model.predict_proba(df_input)[0]
+    prediction = model.predict(df_input)[0]
     
-    # 4. Predição
-    try:
-        prediction = model.predict(df_input)
-        return prediction[0]
-    except Exception as e:
-        print(f"⚠️ Erro na predição: {e}")
-        return 0
+    print(f"📊 IP: {ip_data['src_ip']} | Pacotes: {ip_data['packet_count']} | Probabilidade BOT: {proba[1]:.2f}")
+    
+    return prediction
 
 def packet_callback(packet):
     if packet.haslayer(IP):
